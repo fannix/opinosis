@@ -1,17 +1,21 @@
+""" An Python implemenation of Opinosis
+
+Reference:
+   Kavita Ganesan, ChengXiang Zhai, Jiawei Han. Opinosis: A Graph Based Approach to Abstractive Summarization of Highly Redundant Opinions. In Proceedings of the 23rd International Conference on Computational Linguistics (COLING 2010). Beijing, China.
+   """
+# Author: Xinfan Meng mxf3306@gmail.com
+
 import re
 import networkx as nx
 import numpy as np
 from ConfigParser import ConfigParser
 from collections import defaultdict, Counter
 from operator import itemgetter
-from scikits.learn.cluster import affinity_propagation
 
-def create_graph():
-    root = "/home/mxf/d/opinion_summarizer/OpinosisSummarizer-1.0/opinosis_sample/input/"
-    filename = "bathroom_bestwestern_hotel_sfo.txt.data.parsed"
-    #filename = "food_holiday_inn_london.txt.data.parsed"
-    review_file = root + filename
-    #review_file = "tmp_reviews"
+def create_graph(review_file):
+    """
+    Create a Opinosis graph for the given review_file
+    """
     edges = []
     nodes_pri = defaultdict(list)
     with open(review_file, 'r') as f:
@@ -47,15 +51,18 @@ def valid_start_node(node, nodes_pri):
             return True
     return False
 
-def intersect(pri_so_far, pri2):
+def intersect(pri_so_far, pri_node):
     """
-    Intersect two list of path redundancy: (sid, pid).
+    Get the overlapping part between pri_so_far and pri_node
+
+    pri_so_far: a list of path, path is represented by a list of (sid, pid).
+    pri_node: a list of (sid, pid), this is the presence and position information of the node.
     """
     GAP = int(cp.get("section", "gap"))
     pri_new = []
     for pri in pri_so_far:
         last_sid, last_pid = pri[-1]
-        for sid, pid in pri2:
+        for sid, pid in pri_node:
             if sid == last_sid and pid - last_pid > 0 and pid - last_pid <= GAP:
                 pri = pri[:]
                 pri.append((sid, pid))
@@ -63,6 +70,9 @@ def intersect(pri_so_far, pri2):
     return pri_new
 
 def valid_end_node(graph, node):
+    """
+    Determine if node is a valid end node.
+    """
     if "/." in node  or "/," in node:
         return True
     elif len(graph[node]) <= 0:
@@ -71,11 +81,14 @@ def valid_end_node(graph, node):
         return False
 
 def valid_candidate(sentence):
+    """
+    Determine if the sentence is a valid candidate.
+    """
     #return True
     sent = " ".join(sentence)
     last = sentence[-1]
     w, t = last.split("/")
-    if t in set(["TO", "VBZ", "IN", "CC", "WDT", "PRP", "DT" ","]):
+    if t in set(["TO", "VBZ", "IN", "CC", "WDT", "PRP", "DT", ","]):
         return False
     if re.match(".*(/JJ)*.*(/NN)+.*(/VB)+.*(/JJ)+.*", sent):
         return True
@@ -94,13 +107,12 @@ def path_score(redundancy, sen_len):
     """
     log weghted redundancy score function
     """
-    if sen_len == 2:
-        return redundancy
-    else:
-        return np.log2(sen_len) * redundancy
+    return np.log2(sen_len) * redundancy
 
 def collapsible(node):
-    #return False
+    """
+    Determine if the node can be a hub.
+    """
     if re.match(".*(/VB[A-Z]|/IN)", node):
         return True
     else:
@@ -116,6 +128,10 @@ def intersection_sim(can1, can2):
     return float(len(set1.intersection(set2)))/len(set1.union(set2))
 
 def remove_duplicates(cc, sim_func=intersection_sim):
+    """
+    Use affinity propagation to remove duplicate candidates.
+    """
+    from scikits.learn.cluster import affinity_propagation
     li = cc.keys()
     sim_matrix = np.zeros((len(li), len(li)))
     for i, e1 in enumerate(li):
@@ -129,9 +145,11 @@ def remove_duplicates(cc, sim_func=intersection_sim):
             del cc[e]
 
 def stitch(canchor, cc):
+    """
+    Stitch the anchor sentence and the collpased part together.
+    """
     if len(cc) == 1:
         return cc.keys()[0]
-    #remove_duplicates(cc)
     return " xx ".join(cc.keys())
     sents = cc.keys()
     anchor_str = " ".join(canchor)
@@ -143,42 +161,45 @@ def stitch(canchor, cc):
 
 def traverse(graph, nodes_pri, node, sentence, pri_so_far, score, clist, collapsed):
     """
-    traverse a path
+    Traverse a path.
     """
+    # Don't allow sentence that are too long to avoid looping forever.
     if len(sentence) > 20:
         return 
     redundancy = len(pri_so_far)
     REDUNDANCY_THRESHOLD = int(cp.get("section", "redundancy"))
     if redundancy >= REDUNDANCY_THRESHOLD or valid_end_node(graph, node):
         if valid_end_node(graph, node):
+            #Removing the punctuation at the end. 
+            del sentence[-1]
             if valid_candidate(sentence):
                 final_score = score/float(len(sentence))
-                clist[" ".join(sentence)] = final_score
-                #print sentence, pri_so_far
+                clist[" ".join(sentence)] = score
             return
 
         # Traversing the neighbors
         for neighbor in graph[node]:
-            pri_new = intersect(pri_so_far, nodes_pri[neighbor])
-            #print pri_so_far
             redundancy = len(pri_so_far)
             new_sentence = sentence[:]
             new_sentence.append(neighbor)
             new_score = score + path_score(redundancy, len(new_sentence))
+            pri_new = intersect(pri_so_far, nodes_pri[neighbor])
             
+            #If the neighbor is collapsible and not already collapsed, collapse it.
             if collapsible(neighbor) and not collapsed:
-                #print new_sentence, pri_new
                 canchor = new_sentence
                 cc = defaultdict(int)
+                anchor_score = new_score + path_score(redundancy, len(new_sentence)+1)
                 for vx in graph[neighbor]:
                     pri_vx = intersect(pri_new, nodes_pri[vx])
                     vx_sentence = new_sentence[:]
                     vx_sentence.append(vx)
                     traverse(graph, nodes_pri, vx, vx_sentence, 
-                             pri_vx, new_score, cc, True)
-                cc_path_score = average_path_score(cc)
-                final_score = new_score + cc_path_score
+                             pri_vx, anchor_score, cc, True)
                 if cc:
+                    #remove_duplicates(cc)
+                    cc_path_score = average_path_score(cc)
+                    final_score = float(anchor_score)/len(new_sentence) + cc_path_score
                     stitched_sent = stitch(canchor, cc)
                     clist[stitched_sent] = final_score
             else:
@@ -187,40 +208,46 @@ def traverse(graph, nodes_pri, node, sentence, pri_so_far, score, clist, collaps
 
 def summarize(graph, nodes_pri):
     """
-    Summerizing a graph
+    Create summaries from the Opinosis graph. 
     """
     nodes_size = len(nodes_pri)
     candidates = defaultdict(int)
     for node in nodes_pri:
         if valid_start_node(node, nodes_pri):
-            path_len = 1
             score = 0
             clist = defaultdict(int)
             sentence = [node]
             pri = nodes_pri[node]
             pri_so_far = [[e] for e in pri] 
-            traverse(graph, nodes_pri, node, sentence, pri_so_far, score, clist, False)
+            traverse(graph, nodes_pri, node, sentence, 
+                     pri_so_far, score, clist, False)
             candidates.update(clist)
 
     return candidates
 
 cp = None
 if __name__ == '__main__':
-    edges_cnt, nodes_pri = create_graph()
+    from glob import glob
+    review_files = glob("/home/mxf/d/opinion_summarizer/"
+                        "OpinosisSummarizer-1.0/opinosis_sample/input/*.parsed")
+    #review_files = ["tmp_reviews"]
+    for e in review_files:
+        edges_cnt, nodes_pri = create_graph(e)
 
-    with open('review_edges', 'w') as f:
-        for bigram in edges_cnt:
-            f.write(" ".join([bigram[0], bigram[1]]) + " " + str(edges_cnt[bigram]))
-            f.write("\n")
+        with open('review_edges', 'w') as f:
+            for bigram in edges_cnt:
+                f.write(" ".join([bigram[0], bigram[1]]) + 
+                        " " + str(edges_cnt[bigram]))
+                f.write("\n")
 
-    G = nx.read_edgelist('review_edges', create_using=nx.DiGraph(),data=(('count',int),))
-    cp = ConfigParser()
-    cp.read("opinosis.properties")
-    candidates = summarize(G, nodes_pri)
+        G = nx.read_edgelist('review_edges', create_using=nx.DiGraph(),
+                             data=(('count',int),))
+        cp = ConfigParser()
+        cp.read("opinosis.properties")
+        candidates = summarize(G, nodes_pri)
+        #remove_duplicates(candidates)
 
-    #remove_duplicates(candidates)
-
-    li = candidates.items()
-    li.sort(key=itemgetter(1), reverse=True)
-    for e in li:
-        print e[0], e[1]
+        li = candidates.items()
+        li.sort(key=itemgetter(1), reverse=True)
+        for e in li:
+            print e[0], e[1]
