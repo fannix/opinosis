@@ -3,7 +3,7 @@ This is an implementation of Opinosis
 Reference:
    Kavita Ganesan, ChengXiang Zhai, Jiawei Han. Opinosis: A Graph Based Approach to Abstractive Summarization of Highly Redundant Opinions. In Proceedings of the 23rd International Conference on Computational Linguistics (COLING 2010). Beijing, China.
 
-External Dependancy:
+External Dependency:
     1 NetworkX
     2 scikits.learn
 
